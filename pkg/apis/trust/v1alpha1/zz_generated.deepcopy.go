@@ -60,6 +60,11 @@ func (in *BundleCondition) DeepCopyInto(out *BundleCondition) {
 		in, out := &in.LastTransitionTime, &out.LastTransitionTime
 		*out = (*in).DeepCopy()
 	}
+	if in.SourceVersions != nil {
+		in, out := &in.SourceVersions, &out.SourceVersions
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	return
 }
 
@@ -180,11 +185,6 @@ func (in *BundleStatus) DeepCopyInto(out *BundleStatus) {
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
-	}
-	if in.DefaultCAPackageVersion != nil {
-		in, out := &in.DefaultCAPackageVersion, &out.DefaultCAPackageVersion
-		*out = new(string)
-		**out = **in
 	}
 	return
 }

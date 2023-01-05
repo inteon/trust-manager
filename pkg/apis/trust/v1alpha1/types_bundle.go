@@ -138,12 +138,6 @@ type BundleStatus struct {
 	// Known condition types are `Bundle`.
 	// +optional
 	Conditions []BundleCondition `json:"conditions,omitempty"`
-
-	// DefaultCAPackageVersion, if set and non-empty, indicates the version information
-	// which was retrieved when the set of default CAs was requested in the bundle
-	// source. This should only be set if useDefaultCAs was set to "true" on a source,
-	// and will be the same for the same version of a bundle with identical certificates.
-	DefaultCAPackageVersion *string `json:"defaultCAVersion,omitempty"`
 }
 
 // BundleCondition contains condition information for a Bundle.
@@ -176,7 +170,14 @@ type BundleCondition struct {
 	// with respect to the current state of the Bundle.
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// SourceVersions is a list of the versions of the sources which were used to
+	// generate the Bundle target. The index of the source version corresponds to
+	// the index of the source in the BundleSpec.
+	SourceVersions []string `json:"sourceVersions,omitempty"`
 }
+
+type SourceVersion string
 
 // BundleConditionType represents a Bundle condition value.
 type BundleConditionType string

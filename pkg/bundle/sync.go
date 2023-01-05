@@ -41,7 +41,7 @@ type notFoundError struct{ error }
 type bundleData struct {
 	data string
 
-	defaultCAPackageStringID string
+	sourceVersions []string
 }
 
 // buildSourceBundle retrieves and concatenates all source bundle data for this Bundle object.
@@ -50,29 +50,32 @@ type bundleData struct {
 func (b *bundle) buildSourceBundle(ctx context.Context, bundle *trustapi.Bundle) (bundleData, error) {
 	var resolvedBundle bundleData
 	var bundles []string
+	var versions []string
 
 	for _, source := range bundle.Spec.Sources {
 		var (
 			sourceData string
+			version    string
 			err        error
 		)
 
 		switch {
 		case source.ConfigMap != nil:
-			sourceData, err = b.configMapBundle(ctx, source.ConfigMap)
+			sourceData, version, err = b.configMapBundle(ctx, source.ConfigMap)
 
 		case source.Secret != nil:
-			sourceData, err = b.secretBundle(ctx, source.Secret)
+			sourceData, version, err = b.secretBundle(ctx, source.Secret)
 
 		case source.InLine != nil:
 			sourceData = *source.InLine
+			version = fmt.Sprintf("generation: %d", bundle.GetGeneration())
 
 		case source.UseDefaultCAs != nil && *source.UseDefaultCAs:
 			if b.defaultPackage == nil {
 				err = notFoundError{fmt.Errorf("no default package was specified when trust-manager was started; default CAs not available")}
 			} else {
 				sourceData = b.defaultPackage.Bundle
-				resolvedBundle.defaultCAPackageStringID = b.defaultPackage.StringID()
+				version = b.defaultPackage.StringID()
 			}
 		}
 
@@ -86,6 +89,7 @@ func (b *bundle) buildSourceBundle(ctx context.Context, bundle *trustapi.Bundle)
 		}
 
 		bundles = append(bundles, string(sanitizedBundle))
+		versions = append(versions, version)
 	}
 
 	// NB: bundles should never be empty here, since ValidateAndSanitizePEMBundle errors when a bundle source
@@ -98,47 +102,48 @@ func (b *bundle) buildSourceBundle(ctx context.Context, bundle *trustapi.Bundle)
 	}
 
 	resolvedBundle.data = strings.Join(bundles, "\n") + "\n"
+	resolvedBundle.sourceVersions = versions
 
 	return resolvedBundle, nil
 }
 
 // configMapBundle returns the data in the target ConfigMap within the trust Namespace.
-func (b *bundle) configMapBundle(ctx context.Context, ref *trustapi.SourceObjectKeySelector) (string, error) {
+func (b *bundle) configMapBundle(ctx context.Context, ref *trustapi.SourceObjectKeySelector) (string, string, error) {
 	var configMap corev1.ConfigMap
 	err := b.client.Get(ctx, client.ObjectKey{Namespace: b.Namespace, Name: ref.Name}, &configMap)
 	if apierrors.IsNotFound(err) {
-		return "", notFoundError{err}
+		return "", "", notFoundError{err}
 	}
 
 	if err != nil {
-		return "", fmt.Errorf("failed to get ConfigMap %s/%s: %w", b.Namespace, ref.Name, err)
+		return "", "", fmt.Errorf("failed to get ConfigMap %s/%s: %w", b.Namespace, ref.Name, err)
 	}
 
 	data, ok := configMap.Data[ref.Key]
 	if !ok {
-		return "", notFoundError{fmt.Errorf("no data found in ConfigMap %s/%s at key %q", b.Namespace, ref.Name, ref.Key)}
+		return "", "", notFoundError{fmt.Errorf("no data found in ConfigMap %s/%s at key %q", b.Namespace, ref.Name, ref.Key)}
 	}
 
-	return data, nil
+	return data, fmt.Sprintf("generation: %d", configMap.Generation), nil
 }
 
 // secretBundle returns the data in the target Secret within the trust Namespace.
-func (b *bundle) secretBundle(ctx context.Context, ref *trustapi.SourceObjectKeySelector) (string, error) {
+func (b *bundle) secretBundle(ctx context.Context, ref *trustapi.SourceObjectKeySelector) (string, string, error) {
 	var secret corev1.Secret
 	err := b.client.Get(ctx, client.ObjectKey{Namespace: b.Namespace, Name: ref.Name}, &secret)
 	if apierrors.IsNotFound(err) {
-		return "", notFoundError{err}
+		return "", "", notFoundError{err}
 	}
 	if err != nil {
-		return "", fmt.Errorf("failed to get Secret %s/%s: %w", b.Namespace, ref.Name, err)
+		return "", "", fmt.Errorf("failed to get Secret %s/%s: %w", b.Namespace, ref.Name, err)
 	}
 
 	data, ok := secret.Data[ref.Key]
 	if !ok {
-		return "", notFoundError{fmt.Errorf("no data found in Secret %s/%s at key %q", b.Namespace, ref.Name, ref.Key)}
+		return "", "", notFoundError{fmt.Errorf("no data found in Secret %s/%s at key %q", b.Namespace, ref.Name, ref.Key)}
 	}
 
-	return string(data), nil
+	return string(data), fmt.Sprintf("generation: %d", secret.Generation), nil
 }
 
 // syncTarget syncs the given data to the target ConfigMap in the given namespace.

@@ -142,15 +142,17 @@ spec:
                       reason:
                         description: Reason is a brief machine readable explanation for the condition's last transition.
                         type: string
+                      sourceVersions:
+                        description: SourceVersions is a list of the versions of the sources which were used to generate the Bundle target. The index of the source version corresponds to the index of the source in the BundleSpec.
+                        type: array
+                        items:
+                          type: string
                       status:
                         description: Status of the condition, one of ('True', 'False', 'Unknown').
                         type: string
                       type:
                         description: Type of the condition, known values are (`Synced`).
                         type: string
-                defaultCAVersion:
-                  description: DefaultCAPackageVersion, if set and non-empty, indicates the version information which was retrieved when the set of default CAs was requested in the bundle source. This should only be set if useDefaultCAs was set to "true" on a source, and will be the same for the same version of a bundle with identical certificates.
-                  type: string
                 target:
                   description: Target is the current Target that the Bundle is attempting or has completed syncing the source data to.
                   type: object

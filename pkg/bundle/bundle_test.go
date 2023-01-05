@@ -706,7 +706,6 @@ func Test_Reconcile(t *testing.T) {
 								ObservedGeneration: bundleGeneration,
 							},
 						},
-						DefaultCAPackageVersion: pointer.String(testDefaultPackage.StringID()),
 					}),
 				),
 				&corev1.ConfigMap{
@@ -742,7 +741,6 @@ func Test_Reconcile(t *testing.T) {
 								ObservedGeneration: bundleGeneration,
 							},
 						},
-						DefaultCAPackageVersion: pointer.String(testDefaultPackage.StringID()),
 					}),
 				),
 				&corev1.ConfigMap{
@@ -776,7 +774,6 @@ func Test_Reconcile(t *testing.T) {
 								ObservedGeneration: bundleGeneration,
 							},
 						},
-						DefaultCAPackageVersion: nil,
 					}),
 				),
 				&corev1.ConfigMap{

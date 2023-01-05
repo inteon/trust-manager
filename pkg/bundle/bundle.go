@@ -162,10 +162,11 @@ func (b *bundle) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, 
 	if errors.As(err, &notFoundError{}) {
 		log.Error(err, "bundle source was not found")
 		b.setBundleCondition(&bundle, trustapi.BundleCondition{
-			Type:    trustapi.BundleConditionSynced,
-			Status:  corev1.ConditionFalse,
-			Reason:  "SourceNotFound",
-			Message: "Bundle source was not found: " + err.Error(),
+			Type:           trustapi.BundleConditionSynced,
+			Status:         corev1.ConditionFalse,
+			Reason:         "SourceNotFound",
+			Message:        "Bundle source was not found: " + err.Error(),
+			SourceVersions: nil,
 		})
 
 		b.recorder.Eventf(&bundle, corev1.EventTypeWarning, "SourceNotFound", "Bundle source was not found: %s", err)
@@ -194,10 +195,11 @@ func (b *bundle) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, 
 			b.recorder.Eventf(&bundle, corev1.EventTypeWarning, "SyncTargetFailed", "Failed to sync target in Namespace %q: %s", namespace.Name, err)
 
 			b.setBundleCondition(&bundle, trustapi.BundleCondition{
-				Type:    trustapi.BundleConditionSynced,
-				Status:  corev1.ConditionFalse,
-				Reason:  "SyncTargetFailed",
-				Message: fmt.Sprintf("Failed to sync bundle to namespace %q: %s", namespace.Name, err),
+				Type:           trustapi.BundleConditionSynced,
+				Status:         corev1.ConditionFalse,
+				Reason:         "SyncTargetFailed",
+				Message:        fmt.Sprintf("Failed to sync bundle to namespace %q: %s", namespace.Name, err),
+				SourceVersions: resolvedBundle.sourceVersions,
 			})
 
 			return ctrl.Result{Requeue: true}, b.client.Status().Update(ctx, &bundle)
@@ -214,10 +216,6 @@ func (b *bundle) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, 
 		needsUpdate = true
 	}
 
-	if b.setBundleStatusDefaultCAVersion(&bundle, resolvedBundle.defaultCAPackageStringID) {
-		needsUpdate = true
-	}
-
 	message := "Successfully synced Bundle to all namespaces"
 	if nsSelector := bundle.Spec.Target.NamespaceSelector; nsSelector != nil && nsSelector.MatchLabels != nil {
 		message = fmt.Sprintf("Successfully synced Bundle to namespaces with selector [matchLabels:%v]",
@@ -225,10 +223,11 @@ func (b *bundle) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, 
 	}
 
 	syncedCondition := trustapi.BundleCondition{
-		Type:    trustapi.BundleConditionSynced,
-		Status:  corev1.ConditionTrue,
-		Reason:  "Synced",
-		Message: message,
+		Type:           trustapi.BundleConditionSynced,
+		Status:         corev1.ConditionTrue,
+		Reason:         "Synced",
+		Message:        message,
+		SourceVersions: resolvedBundle.sourceVersions,
 	}
 
 	if !needsUpdate && bundleHasCondition(&bundle, syncedCondition) {

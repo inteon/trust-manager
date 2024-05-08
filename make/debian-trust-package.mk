@@ -35,7 +35,7 @@ ifeq ($(HOST_OS),darwin)
 endif
 
 .PHONY: upgrade-debian-trust-package-version
-upgrade-debian-trust-package-version: |
+upgrade-debian-trust-package-version: | $(bin_dir)/bin/validate-trust-package $(bin_dir)/scratch
 	$(eval temp_out := $(bin_dir)/scratch/debian-trust-package.temp.json)
 	rm -rf $(temp_out)
 

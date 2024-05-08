@@ -37,7 +37,7 @@ TARGET_DEBIAN_BUNDLE_VERSION=${3:-}
 ## b) If the TARGET_* variables are not set, we will fetch the latest version of ca-certificates
 # Suffix to append to the version of ca-certificates package when we fetch the latest
 # version. This will be used to create a PR to bump the version in the ./make/00_debian_version.mk file.
-LATEST_VERSION_SUFFIX=".0"
+LATEST_VERSION_SUFFIX=".1"
 
 function print_usage() {
 	echo "usage: $0 <debian-source-image> <destination file> [target version]"

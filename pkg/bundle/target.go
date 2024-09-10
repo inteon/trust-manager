@@ -25,11 +25,13 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	coreapplyconfig "k8s.io/client-go/applyconfigurations/core/v1"
+	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1applyconfig "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -53,91 +55,67 @@ func (b *bundle) syncConfigMapTarget(
 	resolvedBundle targetData,
 	shouldExist bool,
 ) (bool, error) {
-	configMap := &metav1.PartialObjectMetadata{
+	targetObj := &metav1.PartialObjectMetadata{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ConfigMap",
 			APIVersion: "v1",
 		},
 	}
-	err := b.targetCache.Get(ctx, name, configMap)
+	err := b.targetCache.Get(ctx, name, targetObj)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return false, fmt.Errorf("failed to get ConfigMap %s: %w", name, err)
 	}
 
-	// If the ConfigMap exists, but the Bundle is being deleted, delete the ConfigMap.
-	if apierrors.IsNotFound(err) && !shouldExist {
+	// If the ConfigMap should not exist, and is not found, we are done.
+	if !shouldExist && apierrors.IsNotFound(err) {
 		return false, nil
 	}
 
 	// If the ConfigMap should not exist, but it does, delete it.
-	if !apierrors.IsNotFound(err) && !shouldExist {
-		// apply empty patch to remove the key
-		configMapPatch := coreapplyconfig.
-			ConfigMap(name.Name, name.Namespace).
-			WithLabels(map[string]string{
-				trustapi.BundleLabelKey: bundle.Name,
-			}).
-			WithOwnerReferences(
-				metav1applyconfig.OwnerReference().
-					WithAPIVersion(trustapi.SchemeGroupVersion.String()).
-					WithKind(trustapi.BundleKind).
-					WithName(bundle.GetName()).
-					WithUID(bundle.GetUID()).
-					WithBlockOwnerDeletion(true).
-					WithController(true),
-			)
-
-		if err = b.patchConfigMapResource(ctx, configMapPatch); err != nil {
+	if !shouldExist && !apierrors.IsNotFound(err) {
+		// Apply empty patch to remove the keys.
+		patch := prepareTargetPatch(corev1ac.ConfigMap(name.Name, name.Namespace), *bundle)
+		configMap, err := b.patchConfigMap(ctx, patch)
+		if err != nil {
 			return false, fmt.Errorf("failed to patch ConfigMap %s: %w", name, err)
 		}
-
+		// If the ConfigMap is empty, delete it.
+		if configMap != nil && len(configMap.Data) == 0 && len(configMap.BinaryData) == 0 {
+			return true, b.client.Delete(ctx, configMap)
+		}
 		return true, nil
 	}
 
-	target := bundle.Spec.Target
-	if target.ConfigMap == nil {
+	bundleTarget := bundle.Spec.Target
+	if bundleTarget.ConfigMap == nil {
 		return false, errors.New("target not defined")
 	}
 
 	// Generated JKS is not deterministic - best we can do here is update if the pem cert has
 	// changed (hence not checking if JKS matches)
 	dataHash := fmt.Sprintf("%x", sha256.Sum256([]byte(resolvedBundle.data)))
-	configmapData := map[string]string{
-		target.ConfigMap.Key: resolvedBundle.data,
+	data := map[string]string{
+		bundleTarget.ConfigMap.Key: resolvedBundle.data,
 	}
-	configmapBinData := resolvedBundle.binaryData
+	binData := resolvedBundle.binaryData
 
 	// If the ConfigMap doesn't exist, create it.
 	if !apierrors.IsNotFound(err) {
 		// Exit early if no update is needed
-		if exit, err := b.needsUpdate(ctx, targetKindConfigMap, log, configMap, bundle, dataHash); err != nil {
+		if exit, err := b.needsUpdate(ctx, targetKindConfigMap, log, targetObj, bundle, dataHash); err != nil {
 			return false, err
 		} else if !exit {
 			return false, nil
 		}
 	}
 
-	configMapPatch := coreapplyconfig.
-		ConfigMap(name.Name, name.Namespace).
-		WithLabels(map[string]string{
-			trustapi.BundleLabelKey: bundle.Name,
-		}).
+	patch := prepareTargetPatch(corev1ac.ConfigMap(name.Name, name.Namespace), *bundle).
 		WithAnnotations(map[string]string{
 			trustapi.BundleHashAnnotationKey: dataHash,
 		}).
-		WithOwnerReferences(
-			metav1applyconfig.OwnerReference().
-				WithAPIVersion(trustapi.SchemeGroupVersion.String()).
-				WithKind(trustapi.BundleKind).
-				WithName(bundle.GetName()).
-				WithUID(bundle.GetUID()).
-				WithBlockOwnerDeletion(true).
-				WithController(true),
-		).
-		WithData(configmapData).
-		WithBinaryData(configmapBinData)
-
-	if err = b.patchConfigMapResource(ctx, configMapPatch); err != nil {
+		WithData(data).
+		WithBinaryData(binData)
+	if _, err = b.patchConfigMap(ctx, patch); err != nil {
 		return false, fmt.Errorf("failed to patch ConfigMap %s: %w", name, err)
 	}
 
@@ -158,93 +136,68 @@ func (b *bundle) syncSecretTarget(
 	resolvedBundle targetData,
 	shouldExist bool,
 ) (bool, error) {
-	secret := &metav1.PartialObjectMetadata{
+	targetObj := &metav1.PartialObjectMetadata{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Secret",
 			APIVersion: "v1",
 		},
 	}
-	err := b.targetCache.Get(ctx, name, secret)
+	err := b.targetCache.Get(ctx, name, targetObj)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return false, fmt.Errorf("failed to get Secret %s: %w", name, err)
 	}
 
-	// If the target obj exists, but the Bundle is being deleted, delete the Secret.
-	if apierrors.IsNotFound(err) && !shouldExist {
+	// If the Secret should not exist, and is not found, we are done.
+	if !shouldExist && apierrors.IsNotFound(err) {
 		return false, nil
 	}
 
 	// If the Secret should not exist, but it does, delete it.
-	if !apierrors.IsNotFound(err) && !shouldExist {
-		// apply empty patch to remove the key
-		secretPatch := coreapplyconfig.
-			Secret(name.Name, name.Namespace).
-			WithLabels(map[string]string{
-				trustapi.BundleLabelKey: bundle.Name,
-			}).
-			WithOwnerReferences(
-				metav1applyconfig.OwnerReference().
-					WithAPIVersion(trustapi.SchemeGroupVersion.String()).
-					WithKind(trustapi.BundleKind).
-					WithName(bundle.GetName()).
-					WithUID(bundle.GetUID()).
-					WithBlockOwnerDeletion(true).
-					WithController(true),
-			)
-
-		if err = b.patchSecretResource(ctx, secretPatch); err != nil {
-			return false, fmt.Errorf("failed to patch secret %s: %w", name, err)
+	if !shouldExist && !apierrors.IsNotFound(err) {
+		// Apply empty patch to remove the keys
+		patch := prepareTargetPatch(corev1ac.Secret(name.Name, name.Namespace), *bundle)
+		secret, err := b.patchSecret(ctx, patch)
+		if err != nil {
+			return false, fmt.Errorf("failed to patch Secret %s: %w", name, err)
 		}
-
+		// If the Secret is empty, delete it
+		if secret != nil && len(secret.Data) == 0 {
+			return true, b.client.Delete(ctx, secret)
+		}
 		return true, nil
 	}
 
-	target := bundle.Spec.Target
-	if target.Secret == nil {
+	bundleTarget := bundle.Spec.Target
+	if bundleTarget.Secret == nil {
 		return false, errors.New("target not defined")
 	}
 
 	// Generated JKS is not deterministic - best we can do here is update if the pem cert has
 	// changed (hence not checking if JKS matches)
 	dataHash := fmt.Sprintf("%x", sha256.Sum256([]byte(resolvedBundle.data)))
-	targetData := map[string][]byte{
-		target.Secret.Key: []byte(resolvedBundle.data),
+	data := map[string][]byte{
+		bundleTarget.Secret.Key: []byte(resolvedBundle.data),
 	}
-
 	for k, v := range resolvedBundle.binaryData {
-		targetData[k] = v
+		data[k] = v
 	}
 
 	// If the Secret doesn't exist, create it.
 	if !apierrors.IsNotFound(err) {
 		// Exit early if no update is needed
-		if exit, err := b.needsUpdate(ctx, targetKindSecret, log, secret, bundle, dataHash); err != nil {
+		if exit, err := b.needsUpdate(ctx, targetKindSecret, log, targetObj, bundle, dataHash); err != nil {
 			return false, err
 		} else if !exit {
 			return false, nil
 		}
 	}
 
-	secretPatch := coreapplyconfig.
-		Secret(name.Name, name.Namespace).
-		WithLabels(map[string]string{
-			trustapi.BundleLabelKey: bundle.Name,
-		}).
+	patch := prepareTargetPatch(corev1ac.Secret(name.Name, name.Namespace), *bundle).
 		WithAnnotations(map[string]string{
 			trustapi.BundleHashAnnotationKey: dataHash,
 		}).
-		WithOwnerReferences(
-			metav1applyconfig.OwnerReference().
-				WithAPIVersion(trustapi.SchemeGroupVersion.String()).
-				WithKind(trustapi.BundleKind).
-				WithName(bundle.GetName()).
-				WithUID(bundle.GetUID()).
-				WithBlockOwnerDeletion(true).
-				WithController(true),
-		).
-		WithData(targetData)
-
-	if err = b.patchSecretResource(ctx, secretPatch); err != nil {
+		WithData(data)
+	if _, err = b.patchSecret(ctx, patch); err != nil {
 		return false, fmt.Errorf("failed to patch Secret %s: %w", name, err)
 	}
 
@@ -350,50 +303,55 @@ func listManagedProperties(configmap *metav1.PartialObjectMetadata, fieldManager
 	return properties, nil
 }
 
-func (b *bundle) patchConfigMapResource(ctx context.Context, applyConfig *coreapplyconfig.ConfigMapApplyConfiguration) error {
+func (b *bundle) patchConfigMap(ctx context.Context, applyConfig *coreapplyconfig.ConfigMapApplyConfiguration) (*corev1.ConfigMap, error) {
 	if b.patchResourceOverwrite != nil {
-		return b.patchResourceOverwrite(ctx, applyConfig)
+		return nil, b.patchResourceOverwrite(ctx, applyConfig)
 	}
 
-	configMap, patch, err := ssa_client.GenerateConfigMapPatch(applyConfig)
+	target, patch, err := ssa_client.GenerateConfigMapPatch(applyConfig)
 	if err != nil {
-		return fmt.Errorf("failed to generate patch: %w", err)
+		return nil, fmt.Errorf("failed to generate patch: %w", err)
 	}
 
-	err = b.client.Patch(ctx, configMap, patch, ssa_client.FieldManager, client.ForceOwnership)
-	if err != nil {
-		return err
-	}
-
-	// If the configMap is empty, delete it
-	if len(configMap.Data) == 0 && len(configMap.BinaryData) == 0 {
-		return b.client.Delete(ctx, configMap)
-	}
-
-	return nil
+	return target, b.client.Patch(ctx, target, patch, ssa_client.FieldManager, client.ForceOwnership)
 }
 
-func (b *bundle) patchSecretResource(ctx context.Context, applyConfig *coreapplyconfig.SecretApplyConfiguration) error {
+func (b *bundle) patchSecret(ctx context.Context, applyConfig *coreapplyconfig.SecretApplyConfiguration) (*corev1.Secret, error) {
 	if b.patchResourceOverwrite != nil {
-		return b.patchResourceOverwrite(ctx, applyConfig)
+		return nil, b.patchResourceOverwrite(ctx, applyConfig)
 	}
 
-	secret, patch, err := ssa_client.GenerateSecretPatch(applyConfig)
+	target, patch, err := ssa_client.GenerateSecretPatch(applyConfig)
 	if err != nil {
-		return fmt.Errorf("failed to generate patch: %w", err)
+		return nil, fmt.Errorf("failed to generate patch: %w", err)
 	}
 
-	err = b.client.Patch(ctx, secret, patch, ssa_client.FieldManager, client.ForceOwnership)
-	if err != nil {
-		return err
-	}
+	return target, b.client.Patch(ctx, target, patch, ssa_client.FieldManager, client.ForceOwnership)
+}
 
-	// If the secret is empty, delete it
-	if len(secret.Data) == 0 {
-		return b.client.Delete(ctx, secret)
-	}
+type targetApplyConfigurationC interface {
+	*corev1ac.ConfigMapApplyConfiguration | *corev1ac.SecretApplyConfiguration
+}
 
-	return nil
+type targetApplyConfiguration[T targetApplyConfigurationC] interface {
+	WithLabels(entries map[string]string) T
+	WithOwnerReferences(values ...*metav1applyconfig.OwnerReferenceApplyConfiguration) T
+}
+
+func prepareTargetPatch[C targetApplyConfigurationC, T targetApplyConfiguration[C]](target T, bundle trustapi.Bundle) T {
+	target.WithLabels(map[string]string{
+		trustapi.BundleLabelKey: bundle.Name,
+	})
+	target.WithOwnerReferences(
+		metav1applyconfig.OwnerReference().
+			WithAPIVersion(trustapi.SchemeGroupVersion.String()).
+			WithKind(trustapi.BundleKind).
+			WithName(bundle.GetName()).
+			WithUID(bundle.GetUID()).
+			WithBlockOwnerDeletion(true).
+			WithController(true),
+	)
+	return target
 }
 
 type targetData struct {

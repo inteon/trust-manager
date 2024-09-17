@@ -31,7 +31,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	coreapplyconfig "k8s.io/client-go/applyconfigurations/core/v1"
-	corev1ac "k8s.io/client-go/applyconfigurations/core/v1"
 	metav1applyconfig "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -74,7 +73,7 @@ func (b *bundle) syncConfigMapTarget(
 	// If the ConfigMap should not exist, but it does, delete it.
 	if !shouldExist && !apierrors.IsNotFound(err) {
 		// Apply empty patch to remove the keys.
-		patch := prepareTargetPatch(corev1ac.ConfigMap(name.Name, name.Namespace), *bundle)
+		patch := prepareTargetPatch(coreapplyconfig.ConfigMap(name.Name, name.Namespace), *bundle)
 		configMap, err := b.patchConfigMap(ctx, patch)
 		if err != nil {
 			return false, fmt.Errorf("failed to patch ConfigMap %s: %w", name, err)
@@ -109,7 +108,7 @@ func (b *bundle) syncConfigMapTarget(
 		}
 	}
 
-	patch := prepareTargetPatch(corev1ac.ConfigMap(name.Name, name.Namespace), *bundle).
+	patch := prepareTargetPatch(coreapplyconfig.ConfigMap(name.Name, name.Namespace), *bundle).
 		WithAnnotations(map[string]string{
 			trustapi.BundleHashAnnotationKey: dataHash,
 		}).
@@ -155,7 +154,7 @@ func (b *bundle) syncSecretTarget(
 	// If the Secret should not exist, but it does, delete it.
 	if !shouldExist && !apierrors.IsNotFound(err) {
 		// Apply empty patch to remove the keys
-		patch := prepareTargetPatch(corev1ac.Secret(name.Name, name.Namespace), *bundle)
+		patch := prepareTargetPatch(coreapplyconfig.Secret(name.Name, name.Namespace), *bundle)
 		secret, err := b.patchSecret(ctx, patch)
 		if err != nil {
 			return false, fmt.Errorf("failed to patch Secret %s: %w", name, err)
@@ -192,7 +191,7 @@ func (b *bundle) syncSecretTarget(
 		}
 	}
 
-	patch := prepareTargetPatch(corev1ac.Secret(name.Name, name.Namespace), *bundle).
+	patch := prepareTargetPatch(coreapplyconfig.Secret(name.Name, name.Namespace), *bundle).
 		WithAnnotations(map[string]string{
 			trustapi.BundleHashAnnotationKey: dataHash,
 		}).
@@ -329,29 +328,28 @@ func (b *bundle) patchSecret(ctx context.Context, applyConfig *coreapplyconfig.S
 	return target, b.client.Patch(ctx, target, patch, ssa_client.FieldManager, client.ForceOwnership)
 }
 
-type targetApplyConfigurationC interface {
-	*corev1ac.ConfigMapApplyConfiguration | *corev1ac.SecretApplyConfiguration
-}
+type targetApplyConfiguration[T any] interface {
+	*coreapplyconfig.ConfigMapApplyConfiguration | *coreapplyconfig.SecretApplyConfiguration
 
-type targetApplyConfiguration[T targetApplyConfigurationC] interface {
 	WithLabels(entries map[string]string) T
 	WithOwnerReferences(values ...*metav1applyconfig.OwnerReferenceApplyConfiguration) T
 }
 
-func prepareTargetPatch[C targetApplyConfigurationC, T targetApplyConfiguration[C]](target T, bundle trustapi.Bundle) T {
-	target.WithLabels(map[string]string{
-		trustapi.BundleLabelKey: bundle.Name,
-	})
-	target.WithOwnerReferences(
-		metav1applyconfig.OwnerReference().
-			WithAPIVersion(trustapi.SchemeGroupVersion.String()).
-			WithKind(trustapi.BundleKind).
-			WithName(bundle.GetName()).
-			WithUID(bundle.GetUID()).
-			WithBlockOwnerDeletion(true).
-			WithController(true),
-	)
-	return target
+// see https://stackoverflow.com/a/73851453
+func prepareTargetPatch[T targetApplyConfiguration[T]](target T, bundle trustapi.Bundle) T {
+	return target.
+		WithLabels(map[string]string{
+			trustapi.BundleLabelKey: bundle.Name,
+		}).
+		WithOwnerReferences(
+			metav1applyconfig.OwnerReference().
+				WithAPIVersion(trustapi.SchemeGroupVersion.String()).
+				WithKind(trustapi.BundleKind).
+				WithName(bundle.GetName()).
+				WithUID(bundle.GetUID()).
+				WithBlockOwnerDeletion(true).
+				WithController(true),
+		)
 }
 
 type targetData struct {
